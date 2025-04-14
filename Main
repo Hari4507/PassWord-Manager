@@ -1,0 +1,342 @@
+import javax.crypto.*;
+import javax.crypto.spec.*;
+import java.security.*;
+import java.security.spec.*;
+import java.util.Base64;
+import java.sql.*;
+import java.util.Scanner;
+import java.io.Console;
+
+// Main class to launch the application
+public class Main {
+    public static void main(String[] args) {
+        PasswordManagerApp app = new PasswordManagerApp();
+        app.start();
+    }
+}
+
+// Core password manager application
+class PasswordManagerApp {
+    private EncryptionHandler encryptor;
+    private DatabaseManager dbManager;
+    private Scanner scanner;
+    
+    public PasswordManagerApp() {
+        this.dbManager = new DatabaseManager();
+        this.scanner = new Scanner(System.in);
+    }
+    
+    public void start() {
+        System.out.println("Welcome to Java Password Manager");
+        authenticate();
+        
+        boolean running = true;
+        while (running) {
+            printMenu();
+            String choice = scanner.nextLine();
+            
+            switch (choice) {
+                case "1": storePassword(); break;
+                case "2": retrievePassword(); break;
+                case "3": generatePassword(); break;
+                case "4": running = false; break;
+                default: System.out.println("Invalid option");
+            }
+        }
+        
+        System.out.println("Goodbye!");
+        scanner.close();
+    }
+    
+    private void printMenu() {
+        System.out.println("\nOptions:");
+        System.out.println("1. Store new password");
+        System.out.println("2. Retrieve password");
+        System.out.println("3. Generate strong password");
+        System.out.println("4. Exit");
+        System.out.print("Select an option: ");
+    }
+    
+    private void authenticate() {
+        Console console = System.console();
+        if (console == null) {
+            System.err.println("No console available");
+            System.exit(1);
+        }
+        
+        boolean authenticated = false;
+        while (!authenticated) {
+            char[] passwordChars = console.readPassword("Enter master password: ");
+            String masterPassword = new String(passwordChars);
+            
+            try {
+                this.encryptor = new EncryptionHandler(masterPassword);
+                // Test encryption/decryption
+                String test = "test";
+                String encrypted = encryptor.encrypt(test);
+                String decrypted = encryptor.decrypt(encrypted);
+                
+                if (test.equals(decrypted)) {
+                    authenticated = true;
+                } else {
+                    System.out.println("Authentication failed. Try again.");
+                }
+            } catch (Exception e) {
+                System.out.println("Invalid master password or encryption error. Try again.");
+            }
+        }
+    }
+    
+    private void storePassword() {
+        System.out.print("Service/Website: ");
+        String service = scanner.nextLine();
+        
+        System.out.print("Username: ");
+        String username = scanner.nextLine();
+        
+        Console console = System.console();
+        char[] passwordChars = console.readPassword("Password: ");
+        String password = new String(passwordChars);
+        
+        try {
+            String encryptedPassword = encryptor.encrypt(password);
+            dbManager.addPassword(service, username, encryptedPassword, "");
+            System.out.println("Password stored successfully!");
+        } catch (Exception e) {
+            System.err.println("Error encrypting or storing password: " + e.getMessage());
+        }
+    }
+    
+    private void retrievePassword() {
+        System.out.print("Enter service name: ");
+        String service = scanner.nextLine();
+        
+        DatabaseManager.PasswordEntry entry = dbManager.getPassword(service);
+        if (entry != null) {
+            try {
+                String decryptedPassword = encryptor.decrypt(entry.encryptedPassword);
+                System.out.println("\nService: " + entry.service);
+                System.out.println("Username: " + entry.username);
+                System.out.println("Password: " + decryptedPassword);
+                if (entry.notes != null && !entry.notes.isEmpty()) {
+                    System.out.println("Notes: " + entry.notes);
+                }
+            } catch (Exception e) {
+                System.err.println("Error decrypting password: " + e.getMessage());
+            }
+        } else {
+            System.out.println("No password found for this service.");
+        }
+    }
+    
+    private void generatePassword() {
+        System.out.print("Password length (default 16): ");
+        String lengthInput = scanner.nextLine();
+        int length = lengthInput.isEmpty() ? 16 : Integer.parseInt(lengthInput);
+        
+        System.out.print("Include symbols? (y/n): ");
+        boolean includeSymbols = scanner.nextLine().equalsIgnoreCase("y");
+        
+        String password = PasswordGenerator.generatePassword(length, includeSymbols);
+        System.out.println("\nGenerated Password: " + password);
+        
+        System.out.print("Store this password? (y/n): ");
+        if (scanner.nextLine().equalsIgnoreCase("y")) {
+            System.out.print("Service/Website: ");
+            String service = scanner.nextLine();
+            
+            System.out.print("Username: ");
+            String username = scanner.nextLine();
+            
+            try {
+                String encryptedPassword = encryptor.encrypt(password);
+                dbManager.addPassword(service, username, encryptedPassword, "");
+                System.out.println("Password stored successfully!");
+            } catch (Exception e) {
+                System.err.println("Error encrypting or storing password: " + e.getMessage());
+            }
+        }
+    }
+}
+
+// Encryption handler class
+class EncryptionHandler {
+    private SecretKey secretKey;
+    private Cipher cipher;
+    private static final String ALGORITHM = "AES";
+    private static final String TRANSFORMATION = "AES/CBC/PKCS5Padding";
+    private static final int ITERATIONS = 100000;
+    private static final int KEY_SIZE = 256;
+    private static final byte[] SALT = "static_salt_1234".getBytes(); // In production, generate random salt per user
+    private IvParameterSpec iv;
+
+    public EncryptionHandler(String masterPassword) throws Exception {
+        this.secretKey = deriveKey(masterPassword);
+        this.cipher = Cipher.getInstance(TRANSFORMATION);
+        // Generate IV - in production this should be stored with the encrypted data
+        byte[] ivBytes = new byte[16];
+        new SecureRandom().nextBytes(ivBytes);
+        this.iv = new IvParameterSpec(ivBytes);
+    }
+
+    private SecretKey deriveKey(String password) throws Exception {
+        SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+        KeySpec spec = new PBEKeySpec(password.toCharArray(), SALT, ITERATIONS, KEY_SIZE);
+        SecretKey tmp = factory.generateSecret(spec);
+        return new SecretKeySpec(tmp.getEncoded(), ALGORITHM);
+    }
+
+    public String encrypt(String data) throws Exception {
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey, iv);
+        byte[] encryptedBytes = cipher.doFinal(data.getBytes());
+        return Base64.getEncoder().encodeToString(encryptedBytes);
+    }
+
+    public String decrypt(String encryptedData) throws Exception {
+        cipher.init(Cipher.DECRYPT_MODE, secretKey, iv);
+        byte[] decodedBytes = Base64.getDecoder().decode(encryptedData);
+        byte[] decryptedBytes = cipher.doFinal(decodedBytes);
+        return new String(decryptedBytes);
+    }
+}
+// Database manager class
+class DatabaseManager {
+    private static final String DB_URL = "jdbc:sqlite:passwords.db";
+    
+    public DatabaseManager() {
+        initializeDatabase();
+    }
+    
+    private void initializeDatabase() {
+        try (Connection conn = DriverManager.getConnection(DB_URL);
+             Statement stmt = conn.createStatement()) {
+            
+            String sql = "CREATE TABLE IF NOT EXISTS passwords (" +
+                         "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+                         "service TEXT NOT NULL," +
+                         "username TEXT," +
+                         "encrypted_password TEXT NOT NULL," +
+                         "notes TEXT," +
+                         "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP," +
+                         "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)";
+            
+            stmt.execute(sql);
+        } catch (SQLException e) {
+            System.err.println("Database initialization failed: " + e.getMessage());
+        }
+    }
+    
+    public void addPassword(String service, String username, String encryptedPassword, String notes) {
+        String sql = "INSERT INTO passwords(service, username, encrypted_password, notes) VALUES(?,?,?,?)";
+        
+        try (Connection conn = DriverManager.getConnection(DB_URL);
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            
+            pstmt.setString(1, service);
+            pstmt.setString(2, username);
+            pstmt.setString(3, encryptedPassword);
+            pstmt.setString(4, notes);
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            System.err.println("Error adding password: " + e.getMessage());
+        }
+    }
+    
+    public PasswordEntry getPassword(String service) {
+        String sql = "SELECT username, encrypted_password, notes FROM passwords WHERE service = ?";
+        PasswordEntry entry = null;
+        
+        try (Connection conn = DriverManager.getConnection(DB_URL);
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            
+            pstmt.setString(1, service);
+            ResultSet rs = pstmt.executeQuery();
+            
+            if (rs.next()) {
+                entry = new PasswordEntry(
+                    service,
+                    rs.getString("username"),
+                    rs.getString("encrypted_password"),
+                    rs.getString("notes")
+                );
+            }
+        } catch (SQLException e) {
+            System.err.println("Error retrieving password: " + e.getMessage());
+        }
+        
+        return entry;
+    }
+    
+    // Helper class to hold password entries
+    public static class PasswordEntry {
+        public String service;
+        public String username;
+        public String encryptedPassword;
+        public String notes;
+        
+        public PasswordEntry(String service, String username, String encryptedPassword, String notes) {
+            this.service = service;
+            this.username = username;
+            this.encryptedPassword = encryptedPassword;
+            this.notes = notes;
+        }
+    }
+}
+
+// Password generator class
+class PasswordGenerator {
+    private static final String LOWERCASE = "abcdefghijklmnopqrstuvwxyz";
+    private static final String UPPERCASE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    private static final String DIGITS = "0123456789";
+    private static final String SYMBOLS = "!@#$%^&*()-_=+[]{}|;:,.<>?";
+    private static final SecureRandom random = new SecureRandom();
+    
+    public static String generatePassword(int length, boolean includeSymbols) {
+        if (length < 8) {
+            throw new IllegalArgumentException("Password length must be at least 8 characters");
+        }
+        
+        StringBuilder password = new StringBuilder(length);
+        List<Character> characterSet = new ArrayList<>();
+        
+        // Ensure at least one character from each required set
+        password.append(LOWERCASE.charAt(random.nextInt(LOWERCASE.length())));
+        password.append(UPPERCASE.charAt(random.nextInt(UPPERCASE.length())));
+        password.append(DIGITS.charAt(random.nextInt(DIGITS.length())));
+        if (includeSymbols) {
+            password.append(SYMBOLS.charAt(random.nextInt(SYMBOLS.length())));
+        }
+        
+        // Build the full character set
+        characterSet.addAll(convertToCharList(LOWERCASE));
+        characterSet.addAll(convertToCharList(UPPERCASE));
+        characterSet.addAll(convertToCharList(DIGITS));
+        if (includeSymbols) {
+            characterSet.addAll(convertToCharList(SYMBOLS));
+        }
+        
+        // Fill the rest of the password
+        while (password.length() < length) {
+            password.append(characterSet.get(random.nextInt(characterSet.size())));
+        }
+        
+        // Shuffle to avoid predictable patterns
+        List<Character> passwordChars = convertToCharList(password.toString());
+        Collections.shuffle(passwordChars);
+        
+        StringBuilder shuffledPassword = new StringBuilder(length);
+        for (char c : passwordChars) {
+            shuffledPassword.append(c);
+        }
+        
+        return shuffledPassword.toString();
+    }
+    
+    private static List<Character> convertToCharList(String str) {
+        List<Character> chars = new ArrayList<>();
+        for (char c : str.toCharArray()) {
+            chars.add(c);
+        }
+        return chars;
+    }
+}
